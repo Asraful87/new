@@ -52,8 +52,8 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void openReceiveActivity() {
-//        Intent intent = new Intent(this, ReceiveActivity.class);
-//        startActivity(intent);
+        Intent intent = new Intent(this, ReceiveActivity.class);
+        startActivity(intent);
     }
 
     private void openWebShareActivity() {

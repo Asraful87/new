@@ -13,8 +13,10 @@ import android.net.wifi.p2p.WifiP2pDevice;
 import android.net.wifi.p2p.WifiP2pDeviceList;
 import android.net.wifi.p2p.WifiP2pInfo;
 import android.net.wifi.p2p.WifiP2pManager;
-import android.os.AsyncTask;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
+import android.provider.Settings;
 import android.widget.Button;
 import android.widget.Toast;
 import android.widget.TextView;
@@ -35,6 +37,8 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class SendActivity extends AppCompatActivity {
 
@@ -60,12 +64,23 @@ public class SendActivity extends AppCompatActivity {
     private TextView txtFileCount;
     private ProgressBar progressBar;
 
+    private ExecutorService executorService;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_send);
 
-        // Initialize views
+        initializeViews();
+        setupWifiP2p();
+        setupRecyclerView();
+        setupListeners();
+        checkAndRequestPermissions();
+
+        executorService = Executors.newSingleThreadExecutor();
+    }
+
+    private void initializeViews() {
         btnSelectFiles = findViewById(R.id.btnSelectFiles);
         btnSendFiles = findViewById(R.id.btnSendFiles);
         btnDiscoverPeers = findViewById(R.id.btnDiscoverPeers);
@@ -73,114 +88,87 @@ public class SendActivity extends AppCompatActivity {
         txtPeersFound = findViewById(R.id.txtPeersFound);
         txtFileCount = findViewById(R.id.txtFileCount);
         progressBar = findViewById(R.id.progressBar);
+    }
 
-        // Check and request permissions
-        checkAndRequestPermissions();
-
-        // WiFi Direct setup
+    private void setupWifiP2p() {
         mManager = (WifiP2pManager) getSystemService(Context.WIFI_P2P_SERVICE);
         mChannel = mManager.initialize(this, getMainLooper(), null);
-
-        // Setup RecyclerView
-        fileAdapter = new FileAdapter(selectedFiles, this);
-        recyclerViewFiles.setLayoutManager(new LinearLayoutManager(this));
-        recyclerViewFiles.setAdapter(fileAdapter);
-
-        // Select files button
-        btnSelectFiles.setOnClickListener(v -> openFileSelector());
-
-        // Send files button
-        btnSendFiles.setOnClickListener(v -> sendFiles());
-
-        // Discover peers button
-        btnDiscoverPeers.setOnClickListener(v -> discoverPeers());
-
-        // Prepare WiFi Direct intent filter
         mIntentFilter = new IntentFilter();
         mIntentFilter.addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION);
         mIntentFilter.addAction(WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION);
         mIntentFilter.addAction(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION);
         mIntentFilter.addAction(WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION);
-
-        // Initial UI update
-        updateFileCount();
     }
 
-    private void updateFileCount() {
-        txtFileCount.setText(selectedFiles.size() + " Files Selected");
-        btnSendFiles.setEnabled(!selectedFiles.isEmpty() && !peers.isEmpty());
-        btnSendFiles.setBackgroundTintList(
-                ContextCompat.getColorStateList(this,
-                        (!selectedFiles.isEmpty() && !peers.isEmpty())
-                                ? R.color.enabled_button
-                                : R.color.disabled_button
-                )
-        );
+    private void setupRecyclerView() {
+        fileAdapter = new FileAdapter(selectedFiles, this);
+        recyclerViewFiles.setLayoutManager(new LinearLayoutManager(this));
+        recyclerViewFiles.setAdapter(fileAdapter);
+    }
+
+    private void setupListeners() {
+        btnSelectFiles.setOnClickListener(v -> openFileSelector());
+        btnSendFiles.setOnClickListener(v -> sendFiles());
+        btnDiscoverPeers.setOnClickListener(v -> discoverPeers());
     }
 
     private void checkAndRequestPermissions() {
-        String[] permissions = {
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_WIFI_STATE,
-                Manifest.permission.CHANGE_WIFI_STATE,
-                Manifest.permission.READ_EXTERNAL_STORAGE,
-                Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                Manifest.permission.INTERNET
-        };
-
         List<String> permissionsNeeded = new ArrayList<>();
 
-        for (String permission : permissions) {
-            if (ContextCompat.checkSelfPermission(this, permission)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // Android 13 (API 33) and above
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES)
                     != PackageManager.PERMISSION_GRANTED) {
-                permissionsNeeded.add(permission);
+                permissionsNeeded.add(Manifest.permission.NEARBY_WIFI_DEVICES);
+            }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // Android 11 (API 30) to Android 12 (API 32)
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                    != PackageManager.PERMISSION_GRANTED) {
+                permissionsNeeded.add(Manifest.permission.ACCESS_FINE_LOCATION);
+            }
+            if (!Environment.isExternalStorageManager()) {
+                Intent intent = new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION);
+                startActivity(intent);
+            }
+        } else {
+            // Android 7 (API 24) to Android 10 (API 29)
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                    != PackageManager.PERMISSION_GRANTED) {
+                permissionsNeeded.add(Manifest.permission.ACCESS_FINE_LOCATION);
+            }
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
+                    != PackageManager.PERMISSION_GRANTED) {
+                permissionsNeeded.add(Manifest.permission.READ_EXTERNAL_STORAGE);
+            }
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                    != PackageManager.PERMISSION_GRANTED) {
+                permissionsNeeded.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
             }
         }
 
         if (!permissionsNeeded.isEmpty()) {
-            ActivityCompat.requestPermissions(this,
-                    permissionsNeeded.toArray(new String[0]),
-                    PERMISSIONS_REQUEST_CODE);
+            ActivityCompat.requestPermissions(this, permissionsNeeded.toArray(new String[0]), PERMISSIONS_REQUEST_CODE);
         }
     }
 
     @Override
-    public void onRequestPermissionsResult(int requestCode,
-                                           @NonNull String[] permissions,
-                                           @NonNull int[] grantResults) {
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-
         if (requestCode == PERMISSIONS_REQUEST_CODE) {
-            boolean allPermissionsGranted = true;
-
+            boolean allGranted = true;
             for (int result : grantResults) {
                 if (result != PackageManager.PERMISSION_GRANTED) {
-                    allPermissionsGranted = false;
+                    allGranted = false;
                     break;
                 }
             }
-
-            if (allPermissionsGranted) {
-                Toast.makeText(this, "Permissions Granted", Toast.LENGTH_SHORT).show();
+            if (allGranted) {
+                Toast.makeText(this, "All permissions granted", Toast.LENGTH_SHORT).show();
             } else {
-                Toast.makeText(this, "Permissions Denied", Toast.LENGTH_SHORT).show();
-                finish(); // Close activity if permissions are not granted
+                Toast.makeText(this, "Some permissions were denied", Toast.LENGTH_SHORT).show();
             }
         }
-    }
-
-    private void discoverPeers() {
-        mManager.discoverPeers(mChannel, new WifiP2pManager.ActionListener() {
-            @Override
-            public void onSuccess() {
-                Toast.makeText(SendActivity.this, "Discovering peers", Toast.LENGTH_SHORT).show();
-            }
-
-            @Override
-            public void onFailure(int reasonCode) {
-                Toast.makeText(SendActivity.this, "Peer discovery failed", Toast.LENGTH_SHORT).show();
-            }
-        });
     }
 
     private void openFileSelector() {
@@ -196,13 +184,11 @@ public class SendActivity extends AppCompatActivity {
         if (requestCode == PICK_FILES_REQUEST_CODE && resultCode == RESULT_OK) {
             selectedFiles.clear();
             if (data.getClipData() != null) {
-                // Multiple files selected
                 for (int i = 0; i < data.getClipData().getItemCount(); i++) {
                     Uri fileUri = data.getClipData().getItemAt(i).getUri();
                     selectedFiles.add(fileUri);
                 }
             } else if (data.getData() != null) {
-                // Single file selected
                 selectedFiles.add(data.getData());
             }
             fileAdapter.notifyDataSetChanged();
@@ -210,24 +196,50 @@ public class SendActivity extends AppCompatActivity {
         }
     }
 
+    private void updateFileCount() {
+        txtFileCount.setText(selectedFiles.size() + " Files Selected");
+        btnSendFiles.setEnabled(!selectedFiles.isEmpty() && !peers.isEmpty());
+    }
+
+    private void discoverPeers() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "Nearby devices permission required for discovering peers", Toast.LENGTH_LONG).show();
+                return;
+            }
+        } else if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            Toast.makeText(this, "Location permission required for discovering peers", Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        mManager.discoverPeers(mChannel, new WifiP2pManager.ActionListener() {
+            @Override
+            public void onSuccess() {
+                Toast.makeText(SendActivity.this, "Discovering peers", Toast.LENGTH_SHORT).show();
+            }
+
+            @Override
+            public void onFailure(int reasonCode) {
+                Toast.makeText(SendActivity.this, "Peer discovery failed: " + reasonCode, Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
     private void sendFiles() {
         if (selectedFiles.isEmpty()) {
             Toast.makeText(this, "No files selected", Toast.LENGTH_SHORT).show();
             return;
         }
-
-        // Initiate WiFi Direct connection and file transfer
-        connectAndSendFiles();
-    }
-
-    private void connectAndSendFiles() {
         if (peers.isEmpty()) {
             Toast.makeText(this, "No peers available", Toast.LENGTH_SHORT).show();
             return;
         }
+        connectToPeer(peers.get(0));
+    }
 
+    private void connectToPeer(WifiP2pDevice device) {
         WifiP2pConfig config = new WifiP2pConfig();
-        config.deviceAddress = peers.get(0).deviceAddress; // Select first peer
+        config.deviceAddress = device.deviceAddress;
         config.wps.setup = WpsInfo.PBC;
 
         mManager.connect(mChannel, config, new WifiP2pManager.ActionListener() {
@@ -238,94 +250,79 @@ public class SendActivity extends AppCompatActivity {
 
             @Override
             public void onFailure(int reason) {
-                Toast.makeText(SendActivity.this, "Connection failed", Toast.LENGTH_SHORT).show();
+                Toast.makeText(SendActivity.this, "Connection failed: " + reason, Toast.LENGTH_SHORT).show();
             }
         });
     }
 
     private void startFileTransfer(String host) {
-        new FileTransferTask().execute(host);
-    }
-
-    private class FileTransferTask extends AsyncTask<String, Void, Boolean> {
-        @Override
-        protected void onPreExecute() {
-            progressBar.setVisibility(ProgressBar.VISIBLE);
-        }
-
-        @Override
-        protected Boolean doInBackground(String... params) {
-            String host = params[0];
-            try {
-                Socket socket = new Socket();
+        executorService.execute(() -> {
+            try (Socket socket = new Socket()) {
                 socket.connect(new InetSocketAddress(host, PORT), 5000);
-                OutputStream outputStream = socket.getOutputStream();
-
-                for (Uri fileUri : selectedFiles) {
-                    File file = new File(fileUri.getPath());
-                    byte[] buffer = new byte[1024];
-                    FileInputStream inputStream = new FileInputStream(file);
-
-                    // Send file name
-                    outputStream.write(file.getName().getBytes());
-                    outputStream.write('\n');
-
-                    // Send file size
-                    outputStream.write(String.valueOf(file.length()).getBytes());
-                    outputStream.write('\n');
-
-                    // Send file content
-                    int bytesRead;
-                    while ((bytesRead = inputStream.read(buffer)) != -1) {
-                        outputStream.write(buffer, 0, bytesRead);
+                try (OutputStream outputStream = socket.getOutputStream()) {
+                    long totalBytes = 0;
+                    long sentBytes = 0;
+                    for (Uri fileUri : selectedFiles) {
+                        File file = new File(fileUri.getPath());
+                        totalBytes += file.length();
                     }
-
-                    inputStream.close();
+                    for (Uri fileUri : selectedFiles) {
+                        File file = new File(fileUri.getPath());
+                        try (FileInputStream inputStream = new FileInputStream(file)) {
+                            // Send file name
+                            outputStream.write((file.getName() + "\n").getBytes());
+                            // Send file size
+                            outputStream.write((file.length() + "\n").getBytes());
+                            // Send file content
+                            byte[] buffer = new byte[8192];
+                            int bytesRead;
+                            while ((bytesRead = inputStream.read(buffer)) != -1) {
+                                outputStream.write(buffer, 0, bytesRead);
+                                sentBytes += bytesRead;
+                                final int progress = (int) ((sentBytes * 100) / totalBytes);
+                                runOnUiThread(() -> updateProgress(progress));
+                            }
+                        }
+                    }
+                    runOnUiThread(() -> {
+                        progressBar.setVisibility(ProgressBar.GONE);
+                        Toast.makeText(SendActivity.this, "Files sent successfully", Toast.LENGTH_SHORT).show();
+                    });
                 }
-
-                outputStream.close();
-                socket.close();
-                return true;
             } catch (IOException e) {
                 e.printStackTrace();
-                return false;
+                runOnUiThread(() -> {
+                    progressBar.setVisibility(ProgressBar.GONE);
+                    Toast.makeText(SendActivity.this, "File transfer failed: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                });
             }
-        }
-
-        @Override
-        protected void onPostExecute(Boolean success) {
-            progressBar.setVisibility(ProgressBar.GONE);
-            if (success) {
-                Toast.makeText(SendActivity.this, "Files sent successfully", Toast.LENGTH_SHORT).show();
-            } else {
-                Toast.makeText(SendActivity.this, "File transfer failed", Toast.LENGTH_SHORT).show();
-            }
-        }
+        });
+    }
+    private void updateProgress(int progress) {
+        progressBar.setProgress(progress);
+        // Update a TextView to show the progress percentage
     }
 
-    private WifiP2pManager.PeerListListener peerListListener = new WifiP2pManager.PeerListListener() {
+    private final WifiP2pManager.PeerListListener peerListListener = new WifiP2pManager.PeerListListener() {
         @Override
         public void onPeersAvailable(WifiP2pDeviceList peerList) {
-            peers.clear();
-            peers.addAll(peerList.getDeviceList());
-
-            if (!peers.isEmpty()) {
+            List<WifiP2pDevice> refreshedPeers = new ArrayList<>(peerList.getDeviceList());
+            if (!refreshedPeers.equals(peers)) {
+                peers.clear();
+                peers.addAll(refreshedPeers);
                 txtPeersFound.setText(peers.size() + " Peers Found");
                 updateFileCount();
-            } else {
+            }
+            if (peers.isEmpty()) {
                 Toast.makeText(SendActivity.this, "No peers found", Toast.LENGTH_SHORT).show();
             }
         }
     };
 
-    private WifiP2pManager.ConnectionInfoListener connectionInfoListener = new WifiP2pManager.ConnectionInfoListener() {
+    private final WifiP2pManager.ConnectionInfoListener connectionInfoListener = new WifiP2pManager.ConnectionInfoListener() {
         @Override
         public void onConnectionInfoAvailable(WifiP2pInfo info) {
-            if (info.groupFormed && info.isGroupOwner) {
-                // Start file transfer as group owner
-                startFileTransfer(info.groupOwnerAddress.getHostAddress());
-            } else if (info.groupFormed) {
-                // Start file transfer as client
+            if (info.groupFormed && !info.isGroupOwner) {
                 startFileTransfer(info.groupOwnerAddress.getHostAddress());
             }
         }
@@ -344,13 +341,18 @@ public class SendActivity extends AppCompatActivity {
         unregisterReceiver(mReceiver);
     }
 
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        executorService.shutdown();
+    }
+
     private class WiFiDirectBroadcastReceiver extends BroadcastReceiver {
         private WifiP2pManager mManager;
         private WifiP2pManager.Channel mChannel;
         private SendActivity mActivity;
 
         public WiFiDirectBroadcastReceiver(WifiP2pManager manager, WifiP2pManager.Channel channel, SendActivity activity) {
-            super();
             this.mManager = manager;
             this.mChannel = channel;
             this.mActivity = activity;
@@ -359,7 +361,6 @@ public class SendActivity extends AppCompatActivity {
         @Override
         public void onReceive(Context context, Intent intent) {
             String action = intent.getAction();
-
             if (WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION.equals(action)) {
                 if (mManager != null) {
                     mManager.requestPeers(mChannel, peerListListener);
@@ -372,3 +373,4 @@ public class SendActivity extends AppCompatActivity {
         }
     }
 }
+
